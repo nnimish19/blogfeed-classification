@@ -7,23 +7,22 @@ import StemmerFile
 from pysqlite2 import dbapi2 as sqlite
 
 
-#Takes string/entry and returns unique set of words converted to lower case
+#split, convert lower_case, stemmer, stopwords, bigram
 def getwords(doc):
-    f={}
     splitter=re.compile('\\W*') #\W* ->nonalpha(not a-zA-Z0-9)
-    # Split the words by non-alpha characters
-    word=[s.lower( ) for s in splitter.split(doc) if len(s)>2 and len(s)<20]
+    f={}
+    porter=StemmerFile.PorterStemmer()
 
-    #root words
-    p=StemmerFile.PorterStemmer()
-    words=[p.stem(s, 0,len(s)-1) for s in word]
+    words= [s.lower( ) for s in splitter.split(doc)]
+    stemwords=[porter.stem(s, 0,len(s)-1) for s in words]
+    docwords= [s for s in stemwords if s not in stopwords.ignorewords]
+    for w in docwords: f[w]=1
 
     #bigram
-    for i in range(len(words)):
-        f[words[i]]=1;
-        if i<len(words)-1:
-            twowords=' '.join(words[i:i+2])
-            f[twowords]=1
+    for i in range(len(docwords))-1:
+        twowords='_'.join(docwords[i:i+2])
+        f[twowords]=1
+
     # Return the unique set of words only
     return f #dict([(w,1) for w in words])
 
@@ -31,10 +30,8 @@ def getwords(doc):
 class classifier:    
 #-----------------------------Initialize--------------------------------------
     def __init__(self,getfeatures,filename=None):
-        # Counts of feature/category combinations
-        self.fc={}
-        # Counts of documents in each category
-        self.cc={}
+        self.fc={}  #how many times each feature has appeared in diff cat
+        self.cc={}  #how many times each cat has come in training set
         self.getfeatures=getfeatures    #here we can either use getwords or more sophisticated function defined under feeedfilter, entryfeatures
         self.thresholds={}
 
@@ -44,6 +41,12 @@ class classifier:
         self.con.execute('create table if not exists fc(feature,category,count)')
         self.con.execute('create table if not exists cc(category,count)')
 
+    def flushdb(self,dbfile):
+        self.con=sqlite.connect(dbfile)
+        self.con.execute('drop table if exists fc')
+        self.con.execute('drop table if exists cc')
+
+    #INC Feature count
     def incf(self,f,cat):
         count=self.fcount(f,cat)
         if count==0:
@@ -51,6 +54,7 @@ class classifier:
         else:
             self.con.execute("update fc set count=%d where feature='%s' and category='%s'" %(count+1,f,cat))
 
+    #INC cat count
     def incc(self,cat):
         count=self.catcount(cat)
         if count==0:
@@ -58,16 +62,19 @@ class classifier:
         else:
             self.con.execute("update cc set count=%d where category='%s'"% (count+1,cat))
             
+    #Get feature count
     def fcount(self,f,cat): 
         res=self.con.execute('select count from fc where feature="%s" and category="%s"'%(f,cat)).fetchone( )
         if res==None: return 0
         else: return float(res[0])    
 
+    #Get cat count
     def catcount(self,cat):
         res=self.con.execute('select count from cc where category="%s"'%(cat)).fetchone( )
         if res==None: return 0
         else: return float(res[0])
 
+    #List all cat
     def categories(self):
         cur=self.con.execute('select category from cc');
         return [d[0] for d in cur]
@@ -162,20 +169,34 @@ def sampletrain(cl):
 
 def rsstrain(cl):
     feedfilter.read('https://www.google.com/search?q=technology&tbm=blg&output=rss',cl, 'Technology')
-    feedfilter.read('https://www.google.com/search?q=politics&tbm=blg&output=rss',cl, 'Politics')
-    feedfilter.read('https://www.google.com/search?q=fashion&tbm=blg&output=rss',cl, 'Fashion')
+    #feedfilter.read('https://www.google.com/search?q=tech%20news&tbm=blg&output=rss',cl, 'Technology')
+    #feedfilter.read('https://www.google.com/search?q=latest%20gadgets&tbm=blg&output=rss',cl, 'Technology')
+    #feedfilter.read('https://www.google.com/search?q=future%20technology&tbm=blg&output=rss',cl, 'Technology')
+    #feedfilter.read('https://www.google.com/search?q=inspiring%20technology&tbm=blg&output=rss',cl, 'Technology')
     
-def rssclassify(url,cl):
+    feedfilter.read('https://www.google.com/search?q=politics&tbm=blg&output=rss',cl, 'Politics')
+    #feedfilter.read('https://www.google.com/search?q=indian%20politics&tbm=blg&output=rss',cl, 'Politics')
+    #feedfilter.read('https://www.google.com/search?q=dirty%20politics&tbm=blg&output=rss',cl, 'Politics')
+    #feedfilter.read('https://www.google.com/search?q=united%20states%20politics&tbm=blg&output=rss',cl, 'Politics')
+    #feedfilter.read('https://www.google.com/search?q=world%20politics&tbm=blg&output=rss',cl, 'Politics')
+    
+    feedfilter.read('https://www.google.com/search?q=fashion&tbm=blg&output=rss',cl, 'Fashion')
+    #feedfilter.read('https://www.google.com/search?q=fashion%20lifestyle&tbm=blg&output=rss',cl, 'Fashion')
+    #feedfilter.read('https://www.google.com/search?q=casual%20wear&tbm=blg&output=rss',cl, 'Fashion')
+    #feedfilter.read('https://www.google.com/search?q=party%20wear&tbm=blg&output=rss',cl, 'Fashion')
+    #feedfilter.read('https://www.google.com/search?q=lifestyle&tbm=blg&output=rss',cl, 'Fashion')
+    
+def rssclassify(url,cl,cat):
     f=feedparser.parse(url)
     tot=0.0
     crt=0.0
     for entry in f['entries']:
         guess=str(cl.classify(entry))
         print 'Guess: '+guess
-        if guess=='Technology':
-            crt=crt+1
+        if guess==cat: crt=crt+1
         tot=tot+1
     print 'Accuracy: '+str(crt/tot)
+    return crt/tot
     
     
 #cl=naive_bayes.classifier(docclass_db.getwords)
@@ -186,11 +207,15 @@ def rssclassify(url,cl):
 
 #Train
 cl=naive_bayes.classifier(feedfilter.entryfeatures)
+cl.flushdb('MyFile1.db')
 cl.setdb('MyFile1.db')
 naive_bayes.rsstrain(cl)
-#cl.lookup()
 
 #Test
-rssclassify('http://rss.cnn.com/rss/cnn_tech.rss',cl)
-#rssclassify('http://ctrlq.org/rss/',cl)
+s1=rssclassify('https://www.google.com/search?q=latest%20technology&tbm=blg&output=rss',cl,'Technology')   #Technology
+s2=rssclassify('https://www.google.com/search?q=current%20politics&tbm=blg&output=rss',cl,'Politics')   #Politics
+s3=rssclassify('https://www.google.com/search?q=latest%20fashion&tbm=blg&output=rss',cl,'Fashion')   #Fashion
 
+print 'Overall Accuracy: ' + str((s1+s2+s3)/3)
+
+#http://rss.cnn.com/rss/cnn_tech.rss
